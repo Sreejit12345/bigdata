@@ -6,6 +6,7 @@ from pyspark import *
 
 #sssss
 #rrr
+#i love u A
 
 
 spark_conf=SparkConf()
