@@ -1,0 +1,209 @@
+Session-Generation in Pyspark:
+
+Imagine you are getting clickstream data, from an online website.
+We have to assign session_ids for each record.
+
+Every 2 hours for a user , a new session has to be created, i.e every session can be valid only for 2 hours.
+
+
+Solution:
+
+from pyspark.sql.functions import col,expr,when,month,sum,count,row_number,coalesce,lit,split,size,lower,trim,countDistinct,min,date_format,to_date,\
+weekofyear,datediff,to_timestamp,unix_timestamp,min,max,from_unixtime,concat
+
+from pyspark.sql.window import Window
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType, DateType,BooleanType,TimestampType
+
+
+spark = create_spark_session(app_name='pyspark_usability_test').create_spark_session()  # create spark session with appName ss.  #replace with normal spark session creation
+
+
+
+schema = StructType([
+    StructField("user", StringType(), True),
+    StructField("timestamp", StringType(), True)
+])
+
+# Input data
+data = [
+    ("User_3", "2024-01-01 08:12:45"),
+    ("User_7", "2024-01-01 10:34:21"),
+    ("User_2", "2024-01-01 12:59:03"),
+    ("User_5", "2024-01-01 14:20:11"),
+    ("User_1", "2024-01-01 15:33:59"),
+    ("User_3", "2024-01-01 16:50:38"),
+    ("User_7", "2024-01-01 18:02:17"),
+    ("User_2", "2024-01-01 19:19:44"),
+    ("User_5", "2024-01-01 20:36:30"),
+    ("User_1", "2024-01-01 21:08:12"),
+    ("User_3", "2024-01-01 22:39:59"),
+    ("User_7", "2024-01-01 23:05:17"),
+    ("User_2", "2024-01-02 01:21:23"),
+    ("User_5", "2024-01-02 04:58:50"),
+    ("User_1", "2024-01-02 07:07:36"),
+    ("User_3", "2024-01-02 09:33:12"),
+    ("User_7", "2024-01-02 11:49:05"),
+    ("User_2", "2024-01-02 14:10:51"),
+    ("User_5", "2024-01-02 16:39:59"),
+    ("User_1", "2024-01-02 18:19:44"),
+    ("User_3", "2024-01-02 20:36:30"),
+    ("User_7", "2024-01-02 22:21:23"),
+    ("User_2", "2024-01-03 00:05:17"),
+    ("User_5", "2024-01-03 02:33:12"),
+    ("User_1", "2024-01-03 04:58:50"),
+    ("User_3", "2024-01-03 07:07:36"),
+    ("User_7", "2024-01-03 09:49:05"),
+    ("User_2", "2024-01-03 12:10:51"),
+    ("User_5", "2024-01-03 15:39:59"),
+    ("User_1", "2024-01-03 18:19:44"),
+    ("User_3", "2024-01-03 20:36:30"),
+    ("User_7", "2024-01-03 22:21:23"),
+     ("User_1", "2024-01-01 05:00:00"),
+    ("User_1", "2024-01-01 06:30:00"),
+    ("User_2", "2024-01-01 11:00:00"),
+    ("User_2", "2024-01-01 13:00:00"),
+    ("User_3", "2024-01-01 07:00:00"),
+    ("User_3", "2024-01-01 09:00:00"),
+    ("User_5", "2024-01-01 13:15:00"),
+    ("User_5", "2024-01-01 14:00:00"),
+    ("User_7", "2024-01-01 17:30:00"),
+    ("User_7", "2024-01-01 18:15:00"),
+]
+
+
+duration=7200  # 2 hours in seconds after 2 hours , we are supossed to create a new session
+
+# Convert data to DataFrame
+df = spark.createDataFrame(data, schema=schema)
+
+# Show DataFrame
+df=df.withColumn("epoch",unix_timestamp("timestamp")).withColumn('timestamp',col('timestamp').cast('timestamp'))  #cast to dataframe
+
+
+w=Window.orderBy('user','epoch')
+w1=Window.partitionBy("user").orderBy('epoch')
+
+df=df.withColumn("rn",row_number().over(w)).withColumn("rn_p_user",row_number().over(w1))
+
+print("Original\n")
+df.orderBy('user','epoch').show(100000)
+
+
+#############################################################################################################################################################################################################################
+
+array_list=[]   #list to hold all the temporary sessions generated
+
+countevar=1
+
+df_filtered=df
+
+left_anti_count=1
+
+while(left_anti_count!=0):  #loop breaks when all records are processed
+
+    df_filtered.persist()
+
+    df_start=df_filtered.groupBy('user').agg(min('epoch').alias("me"),min('timestamp').alias("timestamp"))  #finding minimum epoch per user 
+
+
+    df_start=df_start.withColumn("end_interval",from_unixtime(col('me')+duration))    #adding + 2 hours column
+
+
+
+    joined_df = df_start.alias("dfss").join(                                 #match the min record with records having + 2 hours gap
+        df_filtered.alias("dffd"),
+        (col("dffd.user") == col("dfss.user")) & 
+        (col("dffd.timestamp") >= col("dfss.timestamp")) & 
+        (col("dffd.timestamp") <= col("dfss.end_interval")),
+        "inner"
+    )
+
+    # Selecting specific columns
+    selected_df = joined_df.select(
+        col("dffd.user"),
+        col("dffd.timestamp"),
+        col("dffd.epoch"),
+        col("dffd.rn"),
+        col("dffd.rn_p_user")
+    )
+
+    # adding session_ids to the df
+    t_df=selected_df.withColumn("session_id",concat(col('user'),lit('_s'),lit(countevar))).select("user","timestamp","session_id","rn_p_user")  #generate session id.
+
+    array_list.append(t_df)
+
+    # left anti join to find unmatched records
+
+    df_filtered.unpersist()
+
+    df_filtered=t_df.alias("tdf").join(df_filtered.alias("dff"),  (col('tdf.user')==col('dff.user')) &  (col('tdf.rn_p_user')==col('dff.rn_p_user')),
+                        "right").\
+    filter("tdf.user is null").select('dff.*')    #not processing the already processed records
+
+    
+    left_anti_count=df_filtered.count()
+
+    print("c is ",left_anti_count)
+
+    countevar=countevar+1
+
+###################################################################################################################################################################################################################################
+
+fd=array_list[0]
+for i in range(1,len(array_list)):
+    fd=fd.union(array_list[i])                     #union all the temp dfs into one main
+
+fd.select("user","timestamp","session_id").orderBy("user","timestamp").show(10000,truncate=False)
+
+
+
+Sample Output:
+
+
+
++------+-------------------+----------+
+|user  |timestamp          |session_id|
++------+-------------------+----------+
+|User_1|2024-01-01 05:00:00|User_1_s1 |
+|User_1|2024-01-01 06:30:00|User_1_s1 |
+|User_1|2024-01-01 15:33:59|User_1_s2 |
+|User_1|2024-01-01 21:08:12|User_1_s3 |
+|User_1|2024-01-02 07:07:36|User_1_s4 |
+|User_1|2024-01-02 18:19:44|User_1_s5 |
+|User_1|2024-01-03 04:58:50|User_1_s6 |
+|User_1|2024-01-03 18:19:44|User_1_s7 |
+|User_2|2024-01-01 11:00:00|User_2_s1 |
+|User_2|2024-01-01 12:59:03|User_2_s1 |
+|User_2|2024-01-01 13:00:00|User_2_s1 |
+|User_2|2024-01-01 19:19:44|User_2_s2 |
+|User_2|2024-01-02 01:21:23|User_2_s3 |
+|User_2|2024-01-02 14:10:51|User_2_s4 |
+|User_2|2024-01-03 00:05:17|User_2_s5 |
+|User_2|2024-01-03 12:10:51|User_2_s6 |
+|User_3|2024-01-01 07:00:00|User_3_s1 |
+|User_3|2024-01-01 08:12:45|User_3_s1 |
+|User_3|2024-01-01 09:00:00|User_3_s1 |
+|User_3|2024-01-01 16:50:38|User_3_s2 |
+|User_3|2024-01-01 22:39:59|User_3_s3 |
+|User_3|2024-01-02 09:33:12|User_3_s4 |
+|User_3|2024-01-02 20:36:30|User_3_s5 |
+|User_3|2024-01-03 07:07:36|User_3_s6 |
+|User_3|2024-01-03 20:36:30|User_3_s7 |
+|User_5|2024-01-01 13:15:00|User_5_s1 |
+|User_5|2024-01-01 14:00:00|User_5_s1 |
+|User_5|2024-01-01 14:20:11|User_5_s1 |
+|User_5|2024-01-01 20:36:30|User_5_s2 |
+|User_5|2024-01-02 04:58:50|User_5_s3 |
+|User_5|2024-01-02 16:39:59|User_5_s4 |
+|User_5|2024-01-03 02:33:12|User_5_s5 |
+|User_5|2024-01-03 15:39:59|User_5_s6 |
+|User_7|2024-01-01 10:34:21|User_7_s1 |
+|User_7|2024-01-01 17:30:00|User_7_s2 |
+|User_7|2024-01-01 18:02:17|User_7_s2 |
+|User_7|2024-01-01 18:15:00|User_7_s2 |
+|User_7|2024-01-01 23:05:17|User_7_s3 |
+|User_7|2024-01-02 11:49:05|User_7_s4 |
+|User_7|2024-01-02 22:21:23|User_7_s5 |
+|User_7|2024-01-03 09:49:05|User_7_s6 |
+|User_7|2024-01-03 22:21:23|User_7_s7 |
++------+-------------------+----------+
